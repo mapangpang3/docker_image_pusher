@@ -1,1 +1,1 @@
-zabbix/zabbix-server-pgsql:centos-7.0
+zabbix/zabbix-server-mysql
