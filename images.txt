@@ -1,3 +1,4 @@
+zabbix/zabbix-server-mysql:centos-7.0-latest
 zabbix/zabbix-server-pgsql:centos-7.0-latest
 zabbix/zabbix-proxy-sqlite3:centos-7.0-latest
 zabbix/zabbix-web-nginx-pgsql:centos-7.0-latest
