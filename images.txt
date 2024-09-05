@@ -8,4 +8,5 @@ zabbix/zabbix-java-gateway:centos-7.0-latest
 zabbix/zabbix-snmptraps:centos-7.0-latest
 zabbix/zabbix-web-service:centos-7.0-latest
 postgres:16-alpine
+mysql:8.0-oracle
 busybox
