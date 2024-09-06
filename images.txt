@@ -10,3 +10,4 @@ zabbix/zabbix-web-service:centos-7.0-latest
 postgres:16-alpine
 mysql:8.0-oracle
 busybox
+grafana/grafana-enterprise
