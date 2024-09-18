@@ -11,3 +11,4 @@ postgres:16-alpine
 mysql:8.0-oracle
 busybox
 grafana/grafana-enterprise
+atlassian/confluence-server:6.15.1-alpine
