@@ -14,3 +14,8 @@ grafana/grafana-enterprise
 atlassian/confluence-server:6.15.1-alpine
 nginx:latest
 mysql:8.3
+redis:latest
+emqx/emqx:latest
+nacos/nacos-server:2.3.2
+apache/rocketmq:5.2.0
+seataio/seata-server:2.0.0
