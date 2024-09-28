@@ -19,4 +19,4 @@ emqx/emqx:latest
 nacos/nacos-server:v2.3.2
 apache/rocketmq:5.2.0
 seataio/seata-server:2.0.0
-registry.fit2cloud.com/halo/halo:latest
+registry.fit2cloud.com/halo/halo:2.19.3
