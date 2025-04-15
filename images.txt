@@ -21,3 +21,4 @@ seataio/seata-server:2.0.0
 registry.fit2cloud.com/halo/halo:2.19.3
 nacos/nacos-server:latest
 rabbitmq:latest
+apps/playwright-service-ts
