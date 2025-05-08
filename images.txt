@@ -4,4 +4,4 @@ redis:latest
 emqx/emqx:latest
 nacos/nacos-server:latest
 rabbitmq:latest
-zimbra/zimbra-collaboration
+zextras/zimbra-core:latest
