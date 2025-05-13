@@ -1,2 +1,12 @@
-devlake.docker.scarf.sh/apache/devlake:v1.0.2-beta7
-devlake.docker.scarf.sh/apache/devlake-config-ui:v1.0.2-beta7
+nginx:latest
+mysql:latest
+redis:latest
+emqx/emqx:latest
+nacos/nacos-server:latest
+rabbitmq:latest
+zextras/zimbra-core:latest
+mcr.microsoft.com/playwright/python:v1.43.0
+node:18.20.5-alpine3.21
+mysql:8.0.40-debian
+minio/minio:RELEASE.2024-12-18T13-15-44Z.fips
+nginx:stable-alpine3.20-perl
