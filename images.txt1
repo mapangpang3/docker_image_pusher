@@ -4,7 +4,6 @@ redis:latest
 emqx/emqx:latest
 nacos/nacos-server:latest
 rabbitmq:latest
-zextras/zimbra-core:latest
 mcr.microsoft.com/playwright/python:v1.43.0
 node:18.20.5-alpine3.21
 mysql:8.0.40-debian
