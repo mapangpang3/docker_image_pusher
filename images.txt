@@ -1,1 +1,1 @@
-arm64v8/mysql:latest
+arm64v8/mysql
