@@ -1,1 +1,1 @@
-oraclelinux:9-slim
+mysql/mysql:latest
