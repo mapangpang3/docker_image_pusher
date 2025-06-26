@@ -78,7 +78,7 @@ jobs:
         done < images.txt
         
         # 定义支持的架构
-        SUPPORTED_PLATFORMS="linux/amd64,linux/arm64"
+        SUPPORTED_PLATFORMS="linux/x86_64,linux/arm64"
         
         # 定义错误计数器
         error_count=0
