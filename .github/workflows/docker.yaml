@@ -77,8 +77,8 @@ jobs:
             temp_map[$image_name]="${name_space}_"
         done < images.txt
         
-        # 定义支持的架构
-        SUPPORTED_PLATFORMS="linux/amd64,linux/arm64"
+        # 定义可能支持的架构列表
+        POSSIBLE_PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x"
         
         # 定义错误计数器
         error_count=0
@@ -107,7 +107,8 @@ jobs:
             supported_archs=$(docker buildx imagetools inspect $image --format='{{range .Platforms}}{{.Architecture}}/{{.Variant}} {{end}}' 2>/dev/null || echo "")
             echo "镜像 $image 支持的架构: $supported_archs"
             
-            for platform in $(echo $SUPPORTED_PLATFORMS | tr ',' ' '); do
+            # 遍历所有可能的架构，只处理镜像支持的架构
+            for platform in $(echo $POSSIBLE_PLATFORMS | tr ',' ' '); do
                 arch=$(echo $platform | awk -F'/' '{print $2}')
                 variant=$(echo $platform | awk -F'/' '{print $3}')
                 platform_suffix="${platform//\//_}"
@@ -115,6 +116,7 @@ jobs:
                 
                 # 检查镜像是否支持该架构
                 if [[ -z "$supported_archs" ]]; then
+                    # 如果无法获取架构信息，默认尝试构建
                     echo "无法获取镜像架构信息，尝试构建 $platform"
                 elif [[ ! $supported_archs == *"$arch"* ]]; then
                     echo "镜像 $image 不支持 $platform，跳过"
@@ -177,7 +179,7 @@ jobs:
                     ((error_count++))
                 else
                     # 为清单添加架构信息
-                    for platform in $(echo $SUPPORTED_PLATFORMS | tr ',' ' '); do
+                    for platform in $(echo $POSSIBLE_PLATFORMS | tr ',' ' '); do
                         arch=$(echo $platform | awk -F'/' '{print $2}')
                         variant=$(echo $platform | awk -F'/' '{print $3}')
                         tag_suffix="${platform//\//_}"
