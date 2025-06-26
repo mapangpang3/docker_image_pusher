@@ -1,13 +1,1 @@
-kwdb/kwdb:latest
-nginx:latest
-mysql:latest
-redis:latest
-emqx/emqx:latest
-nacos/nacos-server:latest
-rabbitmq:latest
-emqx/emqx:5.5.0
-nginx:1.25-alpine
-redis:7.2-alpine
-mysql:8.2.1
-rabbitmq:3.12-management-alpine
-eclipse-temurin:8u412-b08-jre
+arm64v8/mysql:9.3.0
