@@ -63,135 +63,177 @@ jobs:
         declare -A duplicate_images
         declare -A temp_map
         while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
-            fi
+            [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
             
-            # 获取镜像的完整名称，例如kasmweb/nginx:1.25.3（命名空间/镜像名:版本号）
-            image=$(echo "$line" | awk '{print $NF}')
-            # 将@sha256:等字符删除
-            image="${image%%@*}"
-            echo "image $image"
-            # 获取镜像名:版本号  例如nginx:1.25.3
+            image=$(echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//')
             image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-            echo "image_name_tag $image_name_tag"
-            # 获取命名空间 例如kasmweb,  这里有种特殊情况 docker.io/nginx，把docker.io当成命名空间，也OK
-            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
-            echo "name_space: $name_space"
-            # 这里不要是空值影响判断
-            name_space="${name_space}_"
-            # 获取镜像名例如nginx
+            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else ""}')
             image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
-            echo "image_name: $image_name"
             
-            # 如果镜像存在于数组中，则添加temp_map
-            if [[ -n "${temp_map[$image_name]}" ]]; then
-                 # 如果temp_map已经存在镜像名，判断是不是同一命名空间
-                 if [[ "${temp_map[$image_name]}" != $name_space  ]]; then
-                    echo "duplicate image name: $image_name"
-                    duplicate_images[$image_name]="true"
-                 fi
-            else
-                # 存镜像的命名空间
-                temp_map[$image_name]=$name_space
-            fi       
+            if [[ -n "${temp_map[$image_name]}" && "${temp_map[$image_name]}" != "${name_space}_" ]]; then
+                echo "duplicate image name: $image_name"
+                duplicate_images[$image_name]="true"
+            fi
+            temp_map[$image_name]="${name_space}_"
         done < images.txt
         
-        # 定义要支持的架构列表
+        # 定义支持的架构
         SUPPORTED_PLATFORMS="linux/amd64,linux/arm64"
         
-        while IFS= read -r line || [ -n "$line" ]; do
-            # 忽略空行与注释
-            [[ -z "$line" ]] && continue
-            if echo "$line" | grep -q '^\s*#'; then
-                continue
-            fi
+        # 定义错误计数器
+        error_count=0
         
-            echo "Processing image: $line"
-            image=$(echo "$line" | awk '{print $NF}')
-            image="${image%%@*}"
+        while IFS= read -r line || [ -n "$line" ]; do
+            [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
             
-            # 获取镜像相关信息
+            image=$(echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//')
             image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
-            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
+            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else ""}')
             image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
             
             name_space_prefix=""
-            # 如果镜像名重名
-            if [[ -n "${duplicate_images[$image_name]}" ]]; then
-               #如果命名空间非空，将命名空间加到前缀
-               if [[ -n "${name_space}" ]]; then
-                  name_space_prefix="${name_space}_"
-               fi
+            if [[ -n "${duplicate_images[$image_name]}" && -n "$name_space" ]]; then
+                name_space_prefix="${name_space}_"
             fi
             
-            # 构建目标镜像名称
             new_image_base="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$name_space_prefix$image_name_tag"
+            echo "Processing image: $image -> $new_image_base"
             
-            echo "Building multi-architecture image for: $image"
+            # 创建临时文件存储构建结果
+            BUILD_RESULTS=$(mktemp)
+            echo "" > $BUILD_RESULTS
             
-            # 为每个架构拉取并推送镜像
+            # 检查镜像支持的架构
+            supported_archs=$(docker buildx imagetools inspect $image --format='{{range .Platforms}}{{.Architecture}}/{{.Variant}} {{end}}' 2>/dev/null || echo "")
+            echo "镜像 $image 支持的架构: $supported_archs"
+            
             for platform in $(echo $SUPPORTED_PLATFORMS | tr ',' ' '); do
+                arch=$(echo $platform | awk -F'/' '{print $2}')
+                variant=$(echo $platform | awk -F'/' '{print $3}')
                 platform_suffix="${platform//\//_}"
                 new_image_platform="$new_image_base-$platform_suffix"
                 
-                echo "Handling platform: $platform"
-                echo "Pulling $image for $platform"
+                # 检查镜像是否支持该架构
+                if [[ -z "$supported_archs" ]]; then
+                    echo "无法获取镜像架构信息，尝试构建 $platform"
+                elif [[ ! $supported_archs == *"$arch"* ]]; then
+                    echo "镜像 $image 不支持 $platform，跳过"
+                    continue
+                elif [ -n "$variant" ] && [[ ! $supported_archs == *"$arch/$variant"* ]]; then
+                    echo "镜像 $image 不支持 $platform (需要 $arch/$variant)，跳过"
+                    continue
+                fi
+                
+                echo "Building for platform: $platform"
                 
                 # 创建临时Dockerfile
                 TEMP_DOCKERFILE=$(mktemp)
                 echo "FROM $image" > $TEMP_DOCKERFILE
                 
-                # 使用buildx创建多架构镜像
-                docker buildx build \
+                # 构建镜像并捕获输出
+                if docker buildx build \
                   --platform $platform \
                   --pull \
                   --tag $new_image_platform \
                   --load \
                   --file $TEMP_DOCKERFILE \
-                  .
-                
-                # 删除临时文件
-                rm -f $TEMP_DOCKERFILE
-                
-                echo "Pushing $new_image_platform"
-                docker push $new_image_platform
-                
-                # 清理临时镜像
-                docker rmi $new_image_platform || true
-            done
-            
-            # 创建并推送镜像清单
-            echo "Creating manifest list for $new_image_base"
-            docker manifest create $new_image_base $(echo $SUPPORTED_PLATFORMS | tr ',' ' ' | awk -v base="$new_image_base" '{for(i=1;i<=NF;i++) printf "%s-%s ", base, $i}' | sed 's/\/_/\//g')
-            
-            # 为清单添加架构信息
-            for platform in $(echo $SUPPORTED_PLATFORMS | tr ',' ' '); do
-                arch=$(echo $platform | awk -F'/' '{print $2}')
-                variant=$(echo $platform | awk -F'/' '{print $3}')
-                if [ -n "$variant" ]; then
-                    docker manifest annotate --arch $arch --variant $variant $new_image_base $new_image_base-${platform//\//_}
+                  .; then
+                    echo "SUCCESS:$platform" >> $BUILD_RESULTS
+                    
+                    # 推送镜像
+                    echo "Pushing $new_image_platform"
+                    if ! docker push $new_image_platform; then
+                        echo "推送 $new_image_platform 失败"
+                        ((error_count++))
+                    fi
+                    
+                    # 清理临时镜像
+                    docker rmi $new_image_platform || true
                 else
-                    docker manifest annotate --arch $arch $new_image_base $new_image_base-${platform//\//_}
+                    echo "FAILURE:$platform" >> $BUILD_RESULTS
+                    echo "构建 $platform 失败"
+                    ((error_count++))
                 fi
+                
+                # 删除临时Dockerfile
+                rm -f $TEMP_DOCKERFILE
             done
             
-            # 推送镜像清单
-            echo "Pushing manifest list: $new_image_base"
-            docker manifest push $new_image_base
+            # 读取构建结果
+            successful_builds=()
+            while IFS= read -r result; do
+                if [[ $result == SUCCESS:* ]]; then
+                    platform=${result#SUCCESS:}
+                    platform_suffix="${platform//\//_}"
+                    successful_builds+=("$new_image_base-$platform_suffix")
+                fi
+            done < $BUILD_RESULTS
             
+            # 处理构建结果
+            if [ ${#successful_builds[@]} -gt 1 ]; then
+                echo "创建多架构清单: $new_image_base"
+                if ! docker manifest create $new_image_base "${successful_builds[@]}"; then
+                    echo "创建清单失败: $new_image_base"
+                    ((error_count++))
+                else
+                    # 为清单添加架构信息
+                    for platform in $(echo $SUPPORTED_PLATFORMS | tr ',' ' '); do
+                        arch=$(echo $platform | awk -F'/' '{print $2}')
+                        variant=$(echo $platform | awk -F'/' '{print $3}')
+                        tag_suffix="${platform//\//_}"
+                        
+                        # 检查该平台是否成功构建
+                        if grep -q "SUCCESS:$platform" "$BUILD_RESULTS"; then
+                            annotate_args=("--arch" "$arch")
+                            if [ -n "$variant" ]; then
+                                annotate_args+=("--variant" "$variant")
+                            fi
+                            
+                            echo "为 $new_image_base 添加 $platform 架构信息"
+                            if ! docker manifest annotate "${annotate_args[@]}" $new_image_base $new_image_base-$tag_suffix; then
+                                echo "添加架构信息失败: $platform"
+                                ((error_count++))
+                            fi
+                        fi
+                    done
+                    
+                    # 推送清单
+                    echo "推送清单: $new_image_base"
+                    if ! docker manifest push $new_image_base; then
+                        echo "推送清单失败: $new_image_base"
+                        ((error_count++))
+                    fi
+                fi
+            elif [ ${#successful_builds[@]} -eq 1 ]; then
+                echo "只有一个架构可用，直接标记 ${successful_builds[0]} 为 $new_image_base"
+                if ! docker pull ${successful_builds[0]}; then
+                    echo "拉取 ${successful_builds[0]} 失败"
+                    ((error_count++))
+                elif ! docker tag ${successful_builds[0]} $new_image_base; then
+                    echo "标记镜像失败"
+                    ((error_count++))
+                elif ! docker push $new_image_base; then
+                    echo "推送 $new_image_base 失败"
+                    ((error_count++))
+                fi
+            else
+                echo "没有成功构建任何架构，跳过清单创建"
+                ((error_count++))
+            fi
+            
+            # 删除临时文件
+            rm -f $BUILD_RESULTS
+            
+            # 清理
             echo "清理磁盘空间"
-            echo "=============================================================================="
-            df -hT
-            echo "=============================================================================="
-            
-            # 清理中间镜像
             docker system prune -af --volumes
-            
-            echo "磁盘空间清理完毕"
-            echo "=============================================================================="
-            df -hT
-            echo "=============================================================================="     
         done < images.txt
+        
+        # 检查总体错误情况
+        if [ $error_count -gt 0 ]; then
+            echo "完成，但有 $error_count 个错误"
+            exit $error_count
+        else
+            echo "所有镜像处理成功"
+            exit 0
+        fi
