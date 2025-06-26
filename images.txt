@@ -1,1 +1,1 @@
-arm64v8/mysql
+oraclelinux:9-slim
