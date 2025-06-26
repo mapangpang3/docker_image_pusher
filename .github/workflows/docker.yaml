@@ -140,14 +140,21 @@ jobs:
                 echo "Handling platform: $platform"
                 echo "Pulling $image for $platform"
                 
+                # 创建临时Dockerfile
+                TEMP_DOCKERFILE=$(mktemp)
+                echo "FROM $image" > $TEMP_DOCKERFILE
+                
                 # 使用buildx创建多架构镜像
                 docker buildx build \
                   --platform $platform \
                   --pull \
                   --tag $new_image_platform \
                   --load \
-                  --file <(docker pull $image >/dev/null 2>&1; docker inspect $image --format='{{.Config}}' | grep -q 'CMD' || echo 'FROM '$image) \
+                  --file $TEMP_DOCKERFILE \
                   .
+                
+                # 删除临时文件
+                rm -f $TEMP_DOCKERFILE
                 
                 echo "Pushing $new_image_platform"
                 docker push $new_image_platform
