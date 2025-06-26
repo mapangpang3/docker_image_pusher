@@ -78,7 +78,7 @@ jobs:
         done < images.txt
         
         # 定义可能支持的架构列表
-        POSSIBLE_PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7,linux/ppc64le,linux/s390x"
+        POSSIBLE_PLATFORMS="linux/arm64"
         
         # 定义错误计数器
         error_count=0
