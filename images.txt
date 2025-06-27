@@ -4,3 +4,4 @@ redis:latest
 emqx/emqx:latest
 nacos/nacos-server:latest
 rabbitmq:latest
+nacos/nacos-server:v2.5.1
