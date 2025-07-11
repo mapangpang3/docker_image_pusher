@@ -5,3 +5,4 @@ emqx/emqx:latest
 nacos/nacos-server:latest
 rabbitmq:latest
 nacos/nacos-server:v2.5.1
+arm64v8/openjdk:11-jdk
