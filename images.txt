@@ -3,7 +3,8 @@
 #redis:latest
 #emqx/emqx:latest
 #nacos/nacos-server:latest
-rabbitmq:3.13-management
+#rabbitmq:3.13-management
 #nacos/nacos-server:v2.5.1
 #arm64v8/openjdk:11-jdk
 #node:18
+mongo:latest
