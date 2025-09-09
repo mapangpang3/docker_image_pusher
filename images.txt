@@ -7,4 +7,6 @@
 #nacos/nacos-server:v2.5.1
 #arm64v8/openjdk:11-jdk
 #node:18
-mongo:latest
+#mongo:latest
+adoptopenjdk/openjdk8
+eclipse-temurin:17-jdk
