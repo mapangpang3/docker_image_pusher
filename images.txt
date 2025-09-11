@@ -10,4 +10,4 @@
 #mongo:4.4
 #adoptopenjdk/openjdk8
 #eclipse-temurin:17-jdk
-openeuler:24.03-LTS
+swr.cn-south-1.myhuaweicloud.com/openeuler/openeuler:22.03-LTS-SP4
