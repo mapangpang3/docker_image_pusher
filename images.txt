@@ -11,4 +11,4 @@
 #adoptopenjdk/openjdk8
 #eclipse-temurin:17-jdk
 #repo.openeuler.org/openEuler-24.03-LTS/aarch64:latest
-adoptopenjdk/openjdk17
+eclipse-temurin:17-jdk
