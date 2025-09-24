@@ -12,4 +12,7 @@
 #eclipse-temurin:17-jdk
 #repo.openeuler.org/openEuler-24.03-LTS/aarch64:latest
 #eclipse-temurin:17-jdk
-openeuler/openeuler:22.03
+#openeuler/openeuler:22.03
+docker.io/flannel/flannel-cni-plugin:v1.2.0
+docker.io/flannel/flannel:v0.22.3
+docker.io/flannel/flannel:v0.22.3
