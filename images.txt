@@ -13,4 +13,4 @@
 #repo.openeuler.org/openEuler-24.03-LTS/aarch64:latest
 #eclipse-temurin:17-jdk
 #openeuler/openeuler:22.03
-quay.io/coreos/flannel:v0.26.3-amd64
+postgres:14
