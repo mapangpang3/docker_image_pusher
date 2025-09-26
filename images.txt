@@ -13,4 +13,5 @@
 #repo.openeuler.org/openEuler-24.03-LTS/aarch64:latest
 #eclipse-temurin:17-jdk
 #openeuler/openeuler:22.03
-postgres:14
+#postgres:14
+busybox:1.36
