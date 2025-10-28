@@ -207,7 +207,7 @@ jobs:
             if ! retry_command "docker pull $image --platform linux/amd64 > /dev/null 2>&1 || docker pull $image --platform linux/arm64 > /dev/null 2>&1"; then
                 echo "⚠️  无法拉取源镜像，可能镜像不存在或网络问题"
                 echo "跳过此镜像"
-                ((skip_count++))
+                skip_count=$((skip_count + 1))
                 rm -rf "$BUILD_CONTEXT"
                 continue
             fi
@@ -253,7 +253,7 @@ jobs:
             
             if [[ -z "$build_platforms" ]]; then
                 echo "❌ 没有可构建的平台，跳过此镜像"
-                ((skip_count++))
+                skip_count=$((skip_count + 1))
                 continue
             fi
             
@@ -281,7 +281,7 @@ jobs:
               $BUILD_CONTEXT 2>&1 | tee $BUILD_OUTPUT; then
                 
                 echo "✅ 成功构建并推送: $new_image"
-                ((success_count++))
+                success_count=$((success_count + 1))
                 
                 # 验证推送结果
                 echo "🔍 验证多架构清单..."
@@ -295,7 +295,7 @@ jobs:
                 echo "❌ 构建失败 (退出码: $BUILD_EXIT_CODE): $image"
                 echo "错误详情:"
                 tail -n 50 $BUILD_OUTPUT
-                ((error_count++))
+                error_count=$((error_count + 1))
                 
                 # 尝试单独构建每个架构作为降级方案
                 echo "🔄 尝试单架构降级构建..."
@@ -329,8 +329,8 @@ jobs:
                 
                 if [ "$fallback_success" = true ]; then
                     echo "⚠️  部分架构构建成功（降级模式）"
-                    ((error_count--))  # 不算完全失败
-                    ((success_count++))
+                    error_count=$((error_count - 1))  # 不算完全失败
+                    success_count=$((success_count + 1))
                 fi
             fi
             
