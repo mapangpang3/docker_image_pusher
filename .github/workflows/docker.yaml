@@ -66,12 +66,6 @@ jobs:
 
     - name: Process Images
       run: |
-        # 不使用 set -e 和 set -o pipefail，改为手动错误处理
-        # set -o pipefail  # 先注释掉，可能导致意外退出
-        
-        # 启用详细模式用于调试
-        set -x
-        
         # 检查 images.txt 是否存在
         if [ ! -f images.txt ]; then
             echo "❌ 错误: images.txt 文件不存在"
@@ -109,7 +103,7 @@ jobs:
                 if [ $attempt -lt $max_attempts ]; then
                     echo "失败 (退出码: $exit_code)，等待 ${delay}s 后重试..."
                     sleep $delay
-                    delay=$((delay * 2))  # 指数退避
+                    delay=$((delay * 2))
                 fi
                 attempt=$((attempt + 1))
             done
@@ -124,9 +118,6 @@ jobs:
         
         echo "===== 第一步: 检查重复镜像名称 ====="
         while IFS= read -r line || [ -n "$line" ]; do
-            # 调试：显示正在处理的行
-            echo "📝 读取行: '$line'"
-            
             [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
             
             image=$(echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//')
@@ -150,19 +141,14 @@ jobs:
         skip_count=0
         total_images=0
         
-        echo -e "\n===== 第二步: 处理镜像 ====="
+        echo ""
+        echo "===== 第二步: 处理镜像 ====="
         
         # 测试 buildx 是否可用
         echo "🔧 测试 Docker Buildx..."
         if ! docker buildx version; then
             echo "❌ Docker Buildx 不可用"
             exit 1
-        fi
-        
-        # 测试登录状态
-        echo "🔧 测试 Aliyun Registry 连接..."
-        if ! docker info | grep -i "registry" > /dev/null 2>&1; then
-            echo "⚠️  Docker info 中没有看到 registry 信息"
         fi
         
         # 显示当前 builder
@@ -173,9 +159,12 @@ jobs:
         echo "开始读取 images.txt 并处理..."
         
         while IFS= read -r line || [ -n "$line" ]; do
+            echo "📝 读取行: '$line'"
+            
             [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
             
-            ((total_images++))
+            # 使用安全的算术运算
+            total_images=$(expr $total_images + 1)
             
             image=$(echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//')
             image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
@@ -195,22 +184,8 @@ jobs:
             echo "   目标: $new_image"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
-            # 检查镜像是否已存在（可选优化）
-            if docker manifest inspect $new_image > /dev/null 2>&1; then
-                echo "ℹ️  镜像已存在，检查是否需要更新..."
-            fi
-            
             # 检查源镜像支持的架构
             echo "🔍 检查源镜像支持的架构..."
-            
-            # 首先尝试拉取镜像信息
-            if ! retry_command "docker pull $image --platform linux/amd64 > /dev/null 2>&1 || docker pull $image --platform linux/arm64 > /dev/null 2>&1"; then
-                echo "⚠️  无法拉取源镜像，可能镜像不存在或网络问题"
-                echo "跳过此镜像"
-                skip_count=$((skip_count + 1))
-                rm -rf "$BUILD_CONTEXT"
-                continue
-            fi
             
             supported_archs=$(docker buildx imagetools inspect $image --format='{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}} {{end}}' 2>&1 || echo "")
             
@@ -253,7 +228,7 @@ jobs:
             
             if [[ -z "$build_platforms" ]]; then
                 echo "❌ 没有可构建的平台，跳过此镜像"
-                skip_count=$((skip_count + 1))
+                skip_count=$(expr $skip_count + 1)
                 continue
             fi
             
@@ -281,7 +256,7 @@ jobs:
               $BUILD_CONTEXT 2>&1 | tee $BUILD_OUTPUT; then
                 
                 echo "✅ 成功构建并推送: $new_image"
-                success_count=$((success_count + 1))
+                success_count=$(expr $success_count + 1)
                 
                 # 验证推送结果
                 echo "🔍 验证多架构清单..."
@@ -295,7 +270,7 @@ jobs:
                 echo "❌ 构建失败 (退出码: $BUILD_EXIT_CODE): $image"
                 echo "错误详情:"
                 tail -n 50 $BUILD_OUTPUT
-                error_count=$((error_count + 1))
+                error_count=$(expr $error_count + 1)
                 
                 # 尝试单独构建每个架构作为降级方案
                 echo "🔄 尝试单架构降级构建..."
@@ -329,8 +304,8 @@ jobs:
                 
                 if [ "$fallback_success" = true ]; then
                     echo "⚠️  部分架构构建成功（降级模式）"
-                    error_count=$((error_count - 1))  # 不算完全失败
-                    success_count=$((success_count + 1))
+                    error_count=$(expr $error_count - 1)
+                    success_count=$(expr $success_count + 1)
                 fi
             fi
             
@@ -340,7 +315,7 @@ jobs:
             rm -rf "$BUILD_CONTEXT"
             
             # 定期清理以节省空间
-            if [ $((total_images % 5)) -eq 0 ]; then
+            if [ $(expr $total_images % 5) -eq 0 ]; then
                 echo "🧹 执行定期清理..."
                 docker builder prune -f --filter until=1h || true
             fi
@@ -371,9 +346,6 @@ jobs:
         fi
         
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        
-        # 关闭详细模式
-        set +x
         
         # 根据结果决定退出码
         if [ $error_count -eq 0 ]; then
