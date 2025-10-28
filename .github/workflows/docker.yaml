@@ -66,7 +66,11 @@ jobs:
 
     - name: Process Images
       run: |
-        set -o pipefail  # 捕获管道错误
+        # 不使用 set -e 和 set -o pipefail，改为手动错误处理
+        # set -o pipefail  # 先注释掉，可能导致意外退出
+        
+        # 启用详细模式用于调试
+        set -x
         
         # 检查 images.txt 是否存在
         if [ ! -f images.txt ]; then
@@ -120,6 +124,9 @@ jobs:
         
         echo "===== 第一步: 检查重复镜像名称 ====="
         while IFS= read -r line || [ -n "$line" ]; do
+            # 调试：显示正在处理的行
+            echo "📝 读取行: '$line'"
+            
             [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
             
             image=$(echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//')
@@ -144,6 +151,27 @@ jobs:
         total_images=0
         
         echo -e "\n===== 第二步: 处理镜像 ====="
+        
+        # 测试 buildx 是否可用
+        echo "🔧 测试 Docker Buildx..."
+        if ! docker buildx version; then
+            echo "❌ Docker Buildx 不可用"
+            exit 1
+        fi
+        
+        # 测试登录状态
+        echo "🔧 测试 Aliyun Registry 连接..."
+        if ! docker info | grep -i "registry" > /dev/null 2>&1; then
+            echo "⚠️  Docker info 中没有看到 registry 信息"
+        fi
+        
+        # 显示当前 builder
+        echo "🔧 当前 Builder 实例:"
+        docker buildx ls
+        
+        echo ""
+        echo "开始读取 images.txt 并处理..."
+        
         while IFS= read -r line || [ -n "$line" ]; do
             [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
             
@@ -334,8 +362,18 @@ jobs:
         echo "   ✅ 成功: $success_count"
         echo "   ❌ 失败: $error_count"
         echo "   ⏭️  跳过: $skip_count"
-        echo "   成功率: $(awk "BEGIN {printf \"%.1f%%\", ($success_count/$total_images)*100}")"
+        
+        if [ $total_images -gt 0 ]; then
+            success_rate=$(awk "BEGIN {printf \"%.1f\", ($success_count/$total_images)*100}")
+            echo "   成功率: ${success_rate}%"
+        else
+            echo "   成功率: N/A"
+        fi
+        
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # 关闭详细模式
+        set +x
         
         # 根据结果决定退出码
         if [ $error_count -eq 0 ]; then
