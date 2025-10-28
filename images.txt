@@ -1,8 +1,8 @@
-#nginx:latest
-#mysql:latest
-#redis:latest
-#emqx/emqx:latest
-#nacos/nacos-server:latest
+nginx:latest
+mysql:latest
+redis:latest
+emqx/emqx:latest
+nacos/nacos-server:latest
 #rabbitmq:3.13-management
 #nacos/nacos-server:v2.5.1
 #arm64v8/openjdk:11-jdk
@@ -15,6 +15,6 @@
 #openeuler/openeuler:22.03
 #postgres:14
 #busybox:1.36
-centos:7.9.2009
+#centos:7.9.2009
 
 
