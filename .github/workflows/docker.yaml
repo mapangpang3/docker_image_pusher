@@ -68,6 +68,26 @@ jobs:
       run: |
         set -o pipefail  # 捕获管道错误
         
+        # 检查 images.txt 是否存在
+        if [ ! -f images.txt ]; then
+            echo "❌ 错误: images.txt 文件不存在"
+            echo "当前目录: $(pwd)"
+            echo "目录内容:"
+            ls -la
+            exit 1
+        fi
+        
+        # 检查文件是否为空
+        if [ ! -s images.txt ]; then
+            echo "⚠️  警告: images.txt 文件为空"
+            exit 0
+        fi
+        
+        echo "✅ images.txt 文件存在，开始处理..."
+        echo "文件内容预览:"
+        head -n 5 images.txt
+        echo ""
+        
         # 重试函数
         retry_command() {
             local max_attempts=$MAX_RETRIES
@@ -76,20 +96,21 @@ jobs:
             local cmd="$@"
             
             while [ $attempt -le $max_attempts ]; do
-                echo "尝试 $attempt/$max_attempts: $cmd"
-                if eval "$cmd"; then
+                echo "尝试 $attempt/$max_attempts"
+                if eval "$cmd" 2>&1; then
                     return 0
                 fi
+                local exit_code=$?
                 
                 if [ $attempt -lt $max_attempts ]; then
-                    echo "失败，等待 ${delay}s 后重试..."
+                    echo "失败 (退出码: $exit_code)，等待 ${delay}s 后重试..."
                     sleep $delay
                     delay=$((delay * 2))  # 指数退避
                 fi
                 attempt=$((attempt + 1))
             done
             
-            echo "命令失败，已达最大重试次数"
+            echo "命令失败，已达最大重试次数 (最后退出码: $exit_code)"
             return 1
         }
         
@@ -153,21 +174,36 @@ jobs:
             
             # 检查源镜像支持的架构
             echo "🔍 检查源镜像支持的架构..."
-            supported_archs=$(retry_command "docker buildx imagetools inspect $image --format='{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}} {{end}}' 2>/dev/null" || echo "")
             
-            if [[ -z "$supported_archs" ]]; then
-                echo "⚠️  无法获取架构信息，尝试检测单一架构镜像..."
-                supported_archs=$(retry_command "docker buildx imagetools inspect $image --format='{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}}' 2>/dev/null" || echo "")
+            # 首先尝试拉取镜像信息
+            if ! retry_command "docker pull $image --platform linux/amd64 > /dev/null 2>&1 || docker pull $image --platform linux/arm64 > /dev/null 2>&1"; then
+                echo "⚠️  无法拉取源镜像，可能镜像不存在或网络问题"
+                echo "跳过此镜像"
+                ((skip_count++))
+                rm -rf "$BUILD_CONTEXT"
+                continue
             fi
             
-            echo "   支持的架构: ${supported_archs:-未知}"
+            supported_archs=$(docker buildx imagetools inspect $image --format='{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}} {{end}}' 2>&1 || echo "")
+            
+            if [[ -z "$supported_archs" ]] || [[ "$supported_archs" == *"error"* ]] || [[ "$supported_archs" == *"ERROR"* ]]; then
+                echo "⚠️  无法获取多架构清单，尝试检测单一架构镜像..."
+                supported_archs=$(docker buildx imagetools inspect $image --format='{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}}' 2>&1 || echo "")
+                
+                if [[ -z "$supported_archs" ]] || [[ "$supported_archs" == *"error"* ]] || [[ "$supported_archs" == *"ERROR"* ]]; then
+                    echo "⚠️  仍然无法获取架构信息，将尝试构建所有平台"
+                    supported_archs="unknown"
+                fi
+            fi
+            
+            echo "   支持的架构: ${supported_archs}"
             
             # 确定实际要构建的平台
             build_platforms=""
             for platform in $(echo $PLATFORMS | tr ',' ' '); do
                 arch=$(echo $platform | awk -F'/' '{print $2}')
                 
-                if [[ -n "$supported_archs" ]]; then
+                if [[ "$supported_archs" != "unknown" ]] && [[ -n "$supported_archs" ]]; then
                     if [[ $supported_archs == *"$arch"* ]]; then
                         if [[ -z "$build_platforms" ]]; then
                             build_platforms="$platform"
@@ -202,7 +238,9 @@ jobs:
             
             # 使用 buildx 原生多平台构建并直接推送
             echo "🚀 开始构建和推送..."
-            if retry_command "docker buildx build \
+            BUILD_OUTPUT=$(mktemp)
+            
+            if docker buildx build \
               --platform $build_platforms \
               --pull \
               --tag $new_image \
@@ -212,20 +250,23 @@ jobs:
               --cache-to type=inline \
               --provenance=false \
               --sbom=false \
-              $BUILD_CONTEXT"; then
+              $BUILD_CONTEXT 2>&1 | tee $BUILD_OUTPUT; then
                 
                 echo "✅ 成功构建并推送: $new_image"
                 ((success_count++))
                 
                 # 验证推送结果
                 echo "🔍 验证多架构清单..."
-                if retry_command "docker buildx imagetools inspect $new_image"; then
+                if docker buildx imagetools inspect $new_image 2>&1 | tee -a $BUILD_OUTPUT; then
                     echo "✅ 清单验证成功"
                 else
                     echo "⚠️  清单验证失败，但构建已完成"
                 fi
             else
-                echo "❌ 构建失败: $image"
+                BUILD_EXIT_CODE=$?
+                echo "❌ 构建失败 (退出码: $BUILD_EXIT_CODE): $image"
+                echo "错误详情:"
+                tail -n 50 $BUILD_OUTPUT
                 ((error_count++))
                 
                 # 尝试单独构建每个架构作为降级方案
@@ -237,7 +278,9 @@ jobs:
                     platform_tag="$new_image-$platform_suffix"
                     
                     echo "   尝试单独构建: $platform"
-                    if retry_command "docker buildx build \
+                    FALLBACK_OUTPUT=$(mktemp)
+                    
+                    if docker buildx build \
                       --platform $platform \
                       --pull \
                       --tag $platform_tag \
@@ -245,12 +288,15 @@ jobs:
                       --file $TEMP_DOCKERFILE \
                       --provenance=false \
                       --sbom=false \
-                      $BUILD_CONTEXT"; then
+                      $BUILD_CONTEXT 2>&1 | tee $FALLBACK_OUTPUT; then
                         echo "   ✅ 单架构构建成功: $platform"
                         fallback_success=true
                     else
                         echo "   ❌ 单架构构建失败: $platform"
+                        echo "   错误详情:"
+                        tail -n 20 $FALLBACK_OUTPUT
                     fi
+                    rm -f $FALLBACK_OUTPUT
                 done
                 
                 if [ "$fallback_success" = true ]; then
@@ -259,6 +305,8 @@ jobs:
                     ((success_count++))
                 fi
             fi
+            
+            rm -f $BUILD_OUTPUT
             
             # 清理临时文件
             rm -rf "$BUILD_CONTEXT"
