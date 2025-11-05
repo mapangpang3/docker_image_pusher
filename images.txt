@@ -16,4 +16,4 @@
 #postgres:14
 #busybox:1.36
 #centos:7.9.2009
-nacos/nacos-server:2.4.2
+nacos-server:2.4.2
