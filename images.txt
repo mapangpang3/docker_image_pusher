@@ -16,5 +16,6 @@
 #postgres:14
 #busybox:1.36
 #centos:7.9.2009
-nacos/nacos-server:v2.4.3
-apache/seata-server:2.2.0
+#nacos/nacos-server:v2.4.3
+#apache/seata-server:2.2.0
+httpsok/nginx:1.28.0
