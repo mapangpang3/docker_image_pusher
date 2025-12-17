@@ -19,4 +19,5 @@
 #nacos/nacos-server:v2.4.3
 #apache/seata-server:2.2.0
 #httpsok/nginx:1.28.0-alpine
-nacos/nacos-server:v2.1.1
+#nacos/nacos-server:v2.1.1
+quay.io/kubespray/kubespray:v2.26.0
