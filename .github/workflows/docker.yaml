@@ -5,13 +5,13 @@ on:
   push:
     branches: [ main ]
   schedule:
-    - cron: '00 02 * * *'
+    - cron: '00 02 * * *'  # 2 AM UTC to avoid peak times
 
 env:
   ALIYUN_REGISTRY: "${{ secrets.ALIYUN_REGISTRY }}"
   ALIYUN_NAME_SPACE: "${{ secrets.ALIYUN_NAME_SPACE }}"
   ALIYUN_REGISTRY_USER: "${{ secrets.ALIYUN_REGISTRY_USER }}"
-  PLATFORMS: "linux/arm64,linux/amd64"
+  ALIYUN_REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
   MAX_RETRIES: 3
   RETRY_DELAY: 10
 
@@ -20,214 +20,341 @@ jobs:
     name: Pull and Push Multi-Arch
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+    - name: Before freeing up disk space
+      run: |
+        echo "Before freeing up disk space"
+        echo "=============================================================================="
+        df -hT
+        echo "=============================================================================="
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: |
-            network=host
-            image=moby/buildkit:latest
+    - name: Maximize build space
+      uses: easimon/maximize-build-space@master
+      with:
+        root-reserve-mb: 2048
+        swap-size-mb: 128
+        remove-dotnet: 'true'
+        remove-haskell: 'true'
+        remove-android: 'true'
+        build-mount-path: '/var/lib/docker/'
 
-      - name: Login to Registry
-        env:
-          REGISTRY_PASSWORD: "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}"
-        run: |
-          echo "$REGISTRY_PASSWORD" | docker login -u "${{ secrets.ALIYUN_REGISTRY_USER }}" --password-stdin "${{ secrets.ALIYUN_REGISTRY }}"
+    - name: Restart docker
+      run: sudo service docker restart
 
-      - name: Login to Registry
-        run: |
-          echo "${{ secrets.ALIYUN_REGISTRY_PASSWORD }}" | \
-          docker login -u "${{ secrets.ALIYUN_REGISTRY_USER }}" \
-          --password-stdin "${{ secrets.ALIYUN_REGISTRY }}"
+    - name: Free up disk space complete
+      run: |
+        echo "Free up disk space complete"
+        echo "=============================================================================="
+        df -hT
+        echo "=============================================================================="
 
-      - name: Process Images
-        run: |
-          set -euo pipefail
-          
-          images_file="images.txt"
-          if [[ ! -f "$images_file" ]]; then
-            echo "❌ 错误: $images_file 文件不存在"
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+      
+    - name: Docker Setup Buildx
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver-opts: |
+          network=host
+          image=moby/buildkit:latest
+
+    - name: Login to Aliyun Registry
+      run: |
+        echo $ALIYUN_REGISTRY_PASSWORD | docker login -u $ALIYUN_REGISTRY_USER --password-stdin $ALIYUN_REGISTRY
+
+    - name: Process Images
+      run: |
+        # 检查 images.txt 是否存在
+        if [ ! -f images.txt ]; then
+            echo "❌ 错误: images.txt 文件不存在"
+            echo "当前目录: $(pwd)"
+            echo "目录内容:"
+            ls -la
             exit 1
-          fi
-          
-          if [[ ! -s "$images_file" ]]; then
-            echo "⚠️  警告: $images_file 文件为空"
+        fi
+        
+        # 检查文件是否为空
+        if [ ! -s images.txt ]; then
+            echo "⚠️  警告: images.txt 文件为空"
             exit 0
-          fi
-          
-          echo "✅ 开始处理..."
-          
-          parse_image() {
-            local line="$1"
-            echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//'
-          }
-          
-          detect_duplicate_images() {
-            local -A image_names
-            local duplicates=()
-            while IFS= read -r line || [[ -n "$line" ]]; do
-              [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
-              image=$(parse_image "$line")
-              image_name=$(echo "$image" | awk -F'/' '{print $NF}' | awk -F':' '{print $1}')
-              if [[ -n "${image_names[$image_name]}" ]]; then
-                local already_added=false
-                for dup in "${duplicates[@]:-}"; do
-                  if [[ "$dup" == "$image_name" ]]; then
-                    already_added=true
-                    break
-                  fi
-                done
-                [[ "$already_added" == "false" ]] && duplicates+=("$image_name")
-              fi
-              image_names[$image_name]=1
+        fi
+        
+        echo "✅ images.txt 文件存在，开始处理..."
+        echo "文件内容预览:"
+        head -n 5 images.txt
+        echo ""
+        
+        # 重试函数
+        retry_command() {
+            local max_attempts=$MAX_RETRIES
+            local delay=$RETRY_DELAY
+            local attempt=1
+            local cmd="$@"
+            
+            while [ $attempt -le $max_attempts ]; do
+                echo "尝试 $attempt/$max_attempts"
+                if eval "$cmd" 2>&1; then
+                    return 0
+                fi
+                local exit_code=$?
+                
+                if [ $attempt -lt $max_attempts ]; then
+                    echo "失败 (退出码: $exit_code)，等待 ${delay}s 后重试..."
+                    sleep $delay
+                    delay=$((delay * 2))
+                fi
+                attempt=$((attempt + 1))
             done
-            printf '%s\n' "${duplicates[@]}" 2>/dev/null || true
-          }
-          
-          duplicate_images=$(detect_duplicate_images | sort -u)
-          
-          total=0 success=0 skip=0 error=0
-          
-          while IFS= read -r line || [[ -n "$line" ]]; do
+            
+            echo "命令失败，已达最大重试次数 (最后退出码: $exit_code)"
+            return 1
+        }
+        
+        # 数据预处理,判断镜像是否重名
+        declare -A duplicate_images
+        declare -A temp_map
+        
+        echo "===== 第一步: 检查重复镜像名称 ====="
+        while IFS= read -r line || [ -n "$line" ]; do
             [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
             
-            ((total++))
-            image=$(parse_image "$line")
-            image_name=$(echo "$image" | awk -F'/' '{print $NF}' | awk -F':' '{print $1}')
-            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1}')
+            image=$(echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//')
+            image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
+            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
+            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
             
-            prefix=""
-            for dup in $duplicate_images; do
-              if [[ "$image_name" == "$dup" ]] && [[ -n "$name_space" ]]; then
-                prefix="${name_space}_"
-                break
-              fi
-            done
+            if [[ -n "${temp_map[$image_name]}" && "${temp_map[$image_name]}" != "${name_space}_" ]]; then
+                echo "⚠️  发现重复镜像名: $image_name"
+                duplicate_images[$image_name]="true"
+            fi
+            temp_map[$image_name]="${name_space}_"
+        done < images.txt
+        
+        # 定义支持的架构
+        PLATFORMS="linux/arm64,linux/amd64"
+        
+        # 统计变量
+        error_count=0
+        success_count=0
+        skip_count=0
+        total_images=0
+        
+        echo ""
+        echo "===== 第二步: 处理镜像 ====="
+        
+        # 测试 buildx 是否可用
+        echo "🔧 测试 Docker Buildx..."
+        if ! docker buildx version; then
+            echo "❌ Docker Buildx 不可用"
+            exit 1
+        fi
+        
+        # 显示当前 builder
+        echo "🔧 当前 Builder 实例:"
+        docker buildx ls
+        
+        echo ""
+        echo "开始读取 images.txt 并处理..."
+        
+        while IFS= read -r line || [ -n "$line" ]; do
+            echo "📝 读取行: '$line'"
             
-            new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/${prefix}${image##*/}"
+            [[ -z "$line" || "$line" =~ ^\s*# ]] && continue
+            
+            # 使用安全的算术运算
+            total_images=$(expr $total_images + 1)
+            
+            image=$(echo "$line" | awk '{print $NF}' | sed 's/@sha256.*//')
+            image_name_tag=$(echo "$image" | awk -F'/' '{print $NF}')
+            name_space=$(echo "$image" | awk -F'/' '{if (NF==3) print $2; else if (NF==2) print $1; else print ""}')
+            image_name=$(echo "$image_name_tag" | awk -F':' '{print $1}')
+            
+            name_space_prefix=""
+            if [[ -n "${duplicate_images[$image_name]}" && -n "$name_space" ]]; then
+                name_space_prefix="${name_space}_"
+            fi
+            
+            new_image="$ALIYUN_REGISTRY/$ALIYUN_NAME_SPACE/$name_space_prefix$image_name_tag"
             
             echo ""
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-            echo "📦 处理镜像 [$total]: $image"
+            echo "📦 处理镜像 [$total_images]: $image"
             echo "   目标: $new_image"
             echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
             
+            # 检查源镜像支持的架构
             echo "🔍 检查源镜像支持的架构..."
-            supported_archs=$(docker buildx imagetools inspect "$image" --format='{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}} {{end}}' 2>/dev/null || echo "")
             
-            if [[ -z "$supported_archs" ]]; then
-              supported_archs=$(docker buildx imagetools inspect "$image" --format='{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}}' 2>/dev/null || echo "")
+            supported_archs=$(docker buildx imagetools inspect $image --format='{{range .Manifest.Manifests}}{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}} {{end}}' 2>&1 || echo "")
+            
+            if [[ -z "$supported_archs" ]] || [[ "$supported_archs" == *"error"* ]] || [[ "$supported_archs" == *"ERROR"* ]]; then
+                echo "⚠️  无法获取多架构清单，尝试检测单一架构镜像..."
+                supported_archs=$(docker buildx imagetools inspect $image --format='{{.Platform.OS}}/{{.Platform.Architecture}}{{if .Platform.Variant}}/{{.Platform.Variant}}{{end}}' 2>&1 || echo "")
+                
+                if [[ -z "$supported_archs" ]] || [[ "$supported_archs" == *"error"* ]] || [[ "$supported_archs" == *"ERROR"* ]]; then
+                    echo "⚠️  仍然无法获取架构信息，将尝试构建所有平台"
+                    supported_archs="unknown"
+                fi
             fi
             
-            echo "   支持的架构: ${supported_archs:-无法获取}"
+            echo "   支持的架构: ${supported_archs}"
             
+            # 确定实际要构建的平台
             build_platforms=""
-            for platform in $(echo "$PLATFORMS" | tr ',' ' '); do
-              arch=$(echo "$platform" | awk -F'/' '{print $2}')
-              if [[ "$supported_archs" == *"$arch"* ]] || [[ -z "$supported_archs" ]]; then
-                if [[ -z "$build_platforms" ]]; then
-                  build_platforms="$platform"
+            for platform in $(echo $PLATFORMS | tr ',' ' '); do
+                arch=$(echo $platform | awk -F'/' '{print $2}')
+                
+                if [[ "$supported_archs" != "unknown" ]] && [[ -n "$supported_archs" ]]; then
+                    if [[ $supported_archs == *"$arch"* ]]; then
+                        if [[ -z "$build_platforms" ]]; then
+                            build_platforms="$platform"
+                        else
+                            build_platforms="$build_platforms,$platform"
+                        fi
+                    else
+                        echo "   ⏭️  跳过不支持的架构: $platform"
+                    fi
                 else
-                  build_platforms="$build_platforms,$platform"
+                    # 无法获取架构信息时，尝试所有平台
+                    if [[ -z "$build_platforms" ]]; then
+                        build_platforms="$platform"
+                    else
+                        build_platforms="$build_platforms,$platform"
+                    fi
                 fi
-              else
-                echo "   ⏭️  跳过不支持的架构: $platform"
-              fi
             done
             
             if [[ -z "$build_platforms" ]]; then
-              echo "❌ 没有可构建的平台，跳过此镜像"
-              ((skip++))
-              continue
+                echo "❌ 没有可构建的平台，跳过此镜像"
+                skip_count=$(expr $skip_count + 1)
+                continue
             fi
             
             echo "🔨 准备构建平台: $build_platforms"
             
-            tmp_dir=$(mktemp -d)
-            trap 'rm -rf "$tmp_dir"' EXIT
-            echo "FROM $image" > "$tmp_dir/Dockerfile"
+            # 创建临时构建上下文
+            BUILD_CONTEXT=$(mktemp -d)
+            TEMP_DOCKERFILE="$BUILD_CONTEXT/Dockerfile"
+            echo "FROM $image" > $TEMP_DOCKERFILE
             
+            # 使用 buildx 原生多平台构建并直接推送
             echo "🚀 开始构建和推送..."
+            BUILD_OUTPUT=$(mktemp)
+            
             if docker buildx build \
-              --platform "$build_platforms" \
+              --platform $build_platforms \
               --pull \
-              --tag "$new_image" \
+              --tag $new_image \
               --push \
-              --file "$tmp_dir/Dockerfile" \
-              --cache-from "type=registry,ref=$new_image" \
+              --file $TEMP_DOCKERFILE \
+              --cache-from type=registry,ref=$new_image \
               --cache-to type=inline \
               --provenance=false \
               --sbom=false \
-              "$tmp_dir" 2>&1; then
-              echo "✅ 成功构建并推送: $new_image"
-              ((success++))
-            else
-              echo "⚠️  多架构构建失败，尝试单架构降级构建..."
-              fallback_success=false
-              for platform in $(echo "$build_platforms" | tr ',' ' '); do
-                platform_suffix="${platform//\//_}"
-                platform_tag="$new_image-$platform_suffix"
-                echo "   尝试单独构建: $platform"
-                if docker buildx build \
-                  --platform "$platform" \
-                  --pull \
-                  --tag "$platform_tag" \
-                  --push \
-                  --file "$tmp_dir/Dockerfile" \
-                  --provenance=false \
-                  --sbom=false \
-                  "$tmp_dir" 2>&1; then
-                  echo "   ✅ 单架构构建成功: $platform"
-                  fallback_success=true
+              $BUILD_CONTEXT 2>&1 | tee $BUILD_OUTPUT; then
+                
+                echo "✅ 成功构建并推送: $new_image"
+                success_count=$(expr $success_count + 1)
+                
+                # 验证推送结果
+                echo "🔍 验证多架构清单..."
+                if docker buildx imagetools inspect $new_image 2>&1 | tee -a $BUILD_OUTPUT; then
+                    echo "✅ 清单验证成功"
                 else
-                  echo "   ❌ 单架构构建失败: $platform"
+                    echo "⚠️  清单验证失败，但构建已完成"
                 fi
-              done
-              if [[ "$fallback_success" == "true" ]]; then
-                echo "⚠️  部分架构构建成功（降级模式）"
-                ((success++))
-              else
-                ((error++))
-              fi
+            else
+                BUILD_EXIT_CODE=$?
+                echo "❌ 构建失败 (退出码: $BUILD_EXIT_CODE): $image"
+                echo "错误详情:"
+                tail -n 50 $BUILD_OUTPUT
+                error_count=$(expr $error_count + 1)
+                
+                # 尝试单独构建每个架构作为降级方案
+                echo "🔄 尝试单架构降级构建..."
+                fallback_success=false
+                
+                for platform in $(echo $build_platforms | tr ',' ' '); do
+                    platform_suffix="${platform//\//_}"
+                    platform_tag="$new_image-$platform_suffix"
+                    
+                    echo "   尝试单独构建: $platform"
+                    FALLBACK_OUTPUT=$(mktemp)
+                    
+                    if docker buildx build \
+                      --platform $platform \
+                      --pull \
+                      --tag $platform_tag \
+                      --push \
+                      --file $TEMP_DOCKERFILE \
+                      --provenance=false \
+                      --sbom=false \
+                      $BUILD_CONTEXT 2>&1 | tee $FALLBACK_OUTPUT; then
+                        echo "   ✅ 单架构构建成功: $platform"
+                        fallback_success=true
+                    else
+                        echo "   ❌ 单架构构建失败: $platform"
+                        echo "   错误详情:"
+                        tail -n 20 $FALLBACK_OUTPUT
+                    fi
+                    rm -f $FALLBACK_OUTPUT
+                done
+                
+                if [ "$fallback_success" = true ]; then
+                    echo "⚠️  部分架构构建成功（降级模式）"
+                    error_count=$(expr $error_count - 1)
+                    success_count=$(expr $success_count + 1)
+                fi
             fi
             
-            if (( total % 5 == 0 )); then
-              docker builder prune -f --filter until=1h || true
+            rm -f $BUILD_OUTPUT
+            
+            # 清理临时文件
+            rm -rf "$BUILD_CONTEXT"
+            
+            # 定期清理以节省空间
+            if [ $(expr $total_images % 5) -eq 0 ]; then
+                echo "🧹 执行定期清理..."
+                docker builder prune -f --filter until=1h || true
             fi
-          done < "$images_file"
-          
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "🧹 执行最终清理..."
-          docker system prune -af --volumes || true
-          
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "📊 构建统计"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "   总镜像数: $total"
-          echo "   ✅ 成功: $success"
-          echo "   ❌ 失败: $error"
-          echo "   ⏭️  跳过: $skip"
-          
-          if (( total > 0 )); then
-            success_rate=$(( success * 100 / total ))
+            
+        done < images.txt
+        
+        # 最终清理
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🧹 执行最终清理..."
+        docker system prune -af --volumes || true
+        
+        # 输出统计信息
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📊 构建统计"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "   总镜像数: $total_images"
+        echo "   ✅ 成功: $success_count"
+        echo "   ❌ 失败: $error_count"
+        echo "   ⏭️  跳过: $skip_count"
+        
+        if [ $total_images -gt 0 ]; then
+            success_rate=$(awk "BEGIN {printf \"%.1f\", ($success_count/$total_images)*100}")
             echo "   成功率: ${success_rate}%"
-          else
+        else
             echo "   成功率: N/A"
-          fi
-          
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          
-          if (( error == 0 )); then
+        fi
+        
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        
+        # 根据结果决定退出码
+        if [ $error_count -eq 0 ]; then
             echo "🎉 所有镜像处理成功！"
             exit 0
-          elif (( success > 0 )); then
-            echo "⚠️  部分镜像处理成功，有 $error 个失败"
+        elif [ $success_count -gt 0 ]; then
+            echo "⚠️  部分镜像处理成功，有 $error_count 个失败"
             exit 1
-          else
+        else
             echo "💥 所有镜像处理失败"
             exit 2
-          fi
+        fi
